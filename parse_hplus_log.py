@@ -11,18 +11,29 @@ from struct import unpack
 import binascii
 import re
 import logging
+import ctypes
+
+def getFloat(b4, b3, b2, b1):
+    number =  (((b1 + (b2 * 256)) + ((b3 * 256) * 256)) + (((b4 * 256) * 256) * 256))
+    return ctypes.c_float(number & 0xFFFFFFFF).value / 1000000.0
+
+def getShort(msb, lsb):
+    return (msb & 0xFF) * 256 + (lsb & 0xFF)
+
+def getByte(b):
+    return b & 0xFF
 
 def parseMessage_Sleep(data):
     year = data[2] * 256 + data[1]
     month = data[3]
     day = data[4]
 
-    sleep_enter_time = data[6] * 256 + data[5]
-    sleep_spindles_time = data[8] * 256 + data[7]
-    sleep_deep_time = data[10] * 256 + data[9]
-    sleep_rem_time = data[12] * 256 + data[11]
-    sleep_wakeup_time = data[14] * 256 + data[13]
-    sleep_wakeup_count = data[16] * 256 + data[15]
+    sleep_enter_time = getShort(data[6], data[5])
+    sleep_spindles_time = getShort(data[8], data[7])
+    sleep_deep_time = getShort(data[10], data[9])
+    sleep_rem_time = getShort(data[12], data[11])
+    sleep_wakeup_time = getShort(data[14], data[13])
+    sleep_wakeup_count = getShort(data[16], data[15])
     sleep_start_hour = data[17]
     sleep_start_minute = data[18]
 
@@ -44,27 +55,45 @@ def parseMessage_Sleep(data):
         str(sleep_start_hour) + ":" + str(sleep_start_minute)
 
 def parseMessage_DaySlot(data):
-    slot = data[4] * 256 + data[5]
+    slot = getShort(data[4], data[5])
     heartRate = data[1] & 0xFF
-    steps = (data[2] & 0xFF) * 256 + (data[3] & 0xFF)
+    steps = getShort(data[2], data[3])
 
     atemp = data[6]
     secondsInactive = data[7] & 0xFF
 
     print "DAY_SLOT_DATA: Slot: %d, Steps: %d, InactiveSeconds: %d, HeartRate: %d, ATemp: %d" % (slot, steps, secondsInactive, heartRate, atemp)
 
+def parseMessage_DaySlot_Multiple(data):
+    print "DAY_SLOT_DATA_MULTIPLE: ",
+    if len(data) < 19:
+        print "UNKNOWN " + str(data)
+        return
+    print
+
+    for n in [4, 10, 16]:
+
+        slot = data[n]
+        heartRate = data[n - 3] & 0xFF
+        steps = getShort(data[n - 2], data[n - 1])
+
+        atemp = data[n + 1]
+        active = data[n + 2] & 0xFF
+
+        print "\tSub: %d Slot: %d, Steps: %d, Active: %d, HeartRate: %d, ATemp: %d" % (n, slot, steps, active, heartRate, atemp)
+
 def parseMessage_DayStats(data):
     distance = (data[4] * 256 + data[3]) / 100.0  # in KM
 
-    x = data[6] * 256 + data[5]
-    y = data[8] * 256 + data[7]
+    x = getShort(data[6], data[5])
+    y = getShort(data[8], data[7])
     calories = x + y
 
     steps = data[2] * 256 + data[1]
 
     heartRate = data[11] & 0xFF
 
-    activeTime = (data[14] & 0xFF * 256) + (data[13] & 0xFF)
+    activeTime = getShort(data[14], data[13])
     battery = data[9]
 
     bpm = data[11]
@@ -189,11 +218,11 @@ def parseMessage_DaySummary(data):
     month = data[11] & 0xFF
     day = data[12] & 0xFF
 
-    steps = (data[2] & 0xFF) * 256 + (data[1] & 0xFF)
-    distance = ((data[4] & 0xFF) * 256 + (data[3] & 0xFF)) * 10
-    activeTime = (data[14] & 0xFF) * 256 + (data[13] & 0xFF)
-    calories = (data[6] & 0xFF) * 256 + (data[5] & 0xFF)
-    calories += (data[8] & 0xFF) * 256 + (data[7] & 0xFF)
+    steps = getShort(data[2], data[1])
+    distance = getShort(data[4], data[3]) * 10
+    activeTime = getShort(data[14], data[13])
+    calories = getShort(data[6], data[5])
+    calories += getShort(data[8], data[7])
 
     maxHeartRate = data[15] & 0xFF
     minHeartRate = data[16] & 0xFF
@@ -246,6 +275,35 @@ def parseMessage_UnknownMessage(payload):
 def parseMessage_SetMessageState(payload):
     print "SET_INCOMING_MESSAGE_STATE %d" % payload[1]
 
+def parseMessage_GPSCoordinates(payload):
+    index = payload[1]
+    total = payload[2]
+    current = payload[3]
+
+    if current == 1:
+        year = getShort(payload[5], payload[4])
+        month = payload[6]
+        day = payload[7]
+        hour = payload[8]
+        minute = payload[9]
+        second = payload[10]
+        latitude = getFloat(payload[15], payload[14], payload[13], payload[12])
+        longitude = getFloat(payload[19], payload[18], payload[17], payload[16])
+        print "GPS Index=%d Total=%d Curr=%d Date=%4d-%02i-%02i Time=%02d:%02d:%02d Latitude=%f Longitude=%f" % (index, total, current, year, month, day, hour, minute, second, latitude, longitude)
+    else:
+        latitude = getFloat(payload[7], payload[6], payload[5], payload[4])
+        longitude = getFloat(payload[11], payload[10], payload[9], payload[8])
+        print "GPS Index=%d Total=%d Curr=%d Latitude=%f Longitude=%f" % (index, total, current, latitude, longitude)
+
+def parseMessage_SetIncomingCallNumber(payload):
+    m = ""
+    for c in payload[3:]:
+        m += chr(c)
+
+    print "SET_INCOMING_CALL_NUMBER %s - %s" %  (m, payload[1:])
+
+
+
 def parseMessage(payload):
     s = " >"
     if payload[0] == 0x1b:
@@ -269,13 +327,6 @@ def parseMessage(payload):
         return
     
     print "%s " % s, 
-
-    def parseMessage_SetIncomingCallNumber(payload):
-        m = ""
-        for c in payload[3:]:
-            m += chr(c)
-
-        print "SET_INCOMING_CALL_NUMBER %s - %s" %  (m, payload[1:])
 
     #print "RAW: %s %s - %s" % (s, hexdata, data)
 
@@ -351,6 +402,10 @@ def parseMessage(payload):
         parseMessage_SetConf(payload)
     elif payload[0] == 0x51:
         parseMessage_SetSIT(payload)
+    elif payload[0] == 0x52:
+        parseMessage_DaySlot_Multiple(payload)
+    elif payload[0] == 0x53:
+        parseMessage_GPSCoordinates(payload)
     elif payload[0] == 0x40:
         parseMessage_SetMessageState(payload)
     else:
